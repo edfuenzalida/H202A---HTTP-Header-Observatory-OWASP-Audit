@@ -5,16 +5,21 @@ http_headers_audit.py
 Integra la herramienta 'mdn-http-observatory-scan' (npm, @mdn/mdn-http-observatory)
 para evaluar las cabeceras de seguridad HTTP de un dominio y presenta los
 resultados en un panel de consola, alineado a las recomendaciones del
-OWASP HTTP Headers Cheat Sheet:
-https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html
+OWASP Cheat Sheet Series.
+
+A diferencia del puntaje nativo de Observatory (basado en scoreModifier),
+este script recalcula una puntuación propia ponderada según la importancia
+que OWASP otorga a cada cabecera (ver OWASP_WEIGHTS).
 
 Uso:
-    python3 http_headers_audit.py <dominio> [--json-out salida.json] [--headers '{"X-Foo":"bar"}']
+    python3 http_headers_audit.py <dominio> [--json-out salida.json]
+        [--pdf-out informe.pdf] [--headers '{"X-Foo":"bar"}']
 
 Requisitos:
     - Node.js / npm con 'mdn-http-observatory-scan' instalado (npm i -g @mdn/mdn-http-observatory
       o disponible como binario 'mdn-http-observatory-scan' en el PATH).
     - Paquete Python 'rich' (pip install rich).
+    - Paquete Python 'reportlab' (pip install reportlab) SOLO si se usa --pdf-out.
 """
 
 import argparse
@@ -31,24 +36,50 @@ from rich import box
 
 CLI_BIN = "mdn-http-observatory-scan"
 
+# Cheat Sheet principal de cabeceras HTTP (se usa como base y para los
+# controles que no tienen un artículo OWASP dedicado).
 OWASP_CHEATSHEET_URL = (
     "https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html"
 )
 
-# Mapeo de cada test de mdn-http-observatory hacia la sección/ancla
-# correspondiente del OWASP HTTP Headers Cheat Sheet.
+# Artículos OWASP dedicados (Cheat Sheet Series) para cada cabecera.
+# Se usan URLs directas al artículo preciso en lugar de redirigir al índice.
+OWASP_ARTICLE_URLS = {
+    "content-security-policy": (
+        "https://cheatsheetseries.owasp.org/cheatsheets/Content_Security_Policy_Cheat_Sheet.html"
+    ),
+    "cookies": (
+        "https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html"
+    ),
+    "redirection": (
+        "https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Strict_Transport_Security_Cheat_Sheet.html"
+    ),
+    "strict-transport-security": (
+        "https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Strict_Transport_Security_Cheat_Sheet.html"
+    ),
+    "subresource-integrity": (
+        "https://cheatsheetseries.owasp.org/cheatsheets/Third_Party_Javascript_Management_Cheat_Sheet.html"
+    ),
+    "x-frame-options": (
+        "https://cheatsheetseries.owasp.org/cheatsheets/Clickjacking_Defense_Cheat_Sheet.html"
+    ),
+}
+
+# Mapeo de cada test de mdn-http-observatory hacia el artículo/ancla OWASP
+# correspondiente. Cuando existe un artículo dedicado se usa ese; en caso
+# contrario se apunta al ancla exacta del HTTP Headers Cheat Sheet.
 # (mdn-http-observatory-scan solo ejecuta estos 10 tests; ver
 # src/analyzer/tests/*.js del paquete @mdn/mdn-http-observatory)
 OWASP_HEADER_LINKS = {
-    "content-security-policy": OWASP_CHEATSHEET_URL + "#content-security-policy-csp",
-    "cookies": OWASP_CHEATSHEET_URL + "#set-cookie",
+    "content-security-policy": OWASP_ARTICLE_URLS["content-security-policy"],
+    "cookies": OWASP_ARTICLE_URLS["cookies"],
     "cross-origin-resource-sharing": OWASP_CHEATSHEET_URL + "#access-control-allow-origin",
-    "redirection": OWASP_CHEATSHEET_URL + "#strict-transport-security-hsts",
+    "redirection": OWASP_ARTICLE_URLS["redirection"],
     "referrer-policy": OWASP_CHEATSHEET_URL + "#referrer-policy",
-    "strict-transport-security": OWASP_CHEATSHEET_URL + "#strict-transport-security-hsts",
-    "subresource-integrity": OWASP_CHEATSHEET_URL + "#recommendation",
+    "strict-transport-security": OWASP_ARTICLE_URLS["strict-transport-security"],
+    "subresource-integrity": OWASP_ARTICLE_URLS["subresource-integrity"],
     "x-content-type-options": OWASP_CHEATSHEET_URL + "#x-content-type-options",
-    "x-frame-options": OWASP_CHEATSHEET_URL + "#x-frame-options",
+    "x-frame-options": OWASP_ARTICLE_URLS["x-frame-options"],
     "cross-origin-resource-policy": OWASP_CHEATSHEET_URL + "#cross-origin-resource-policy-corp",
 }
 
@@ -66,8 +97,8 @@ TEST_LABELS = {
     "cross-origin-resource-policy": "Cross-Origin-Resource-Policy (CORP)",
 }
 
-# Valor / configuración recomendada por el OWASP HTTP Headers Cheat Sheet
-# para cada test cubierto por mdn-http-observatory-scan.
+# Valor / configuración recomendada por OWASP para cada test cubierto por
+# mdn-http-observatory-scan.
 RECOMMENDED_VALUES = {
     "content-security-policy": (
         "Definir una política restrictiva sin 'unsafe-inline' ni 'unsafe-eval' "
@@ -92,10 +123,31 @@ RECOMMENDED_VALUES = {
     "cross-origin-resource-policy": "Cross-Origin-Resource-Policy: same-site",
 }
 
-# Cabeceras adicionales recomendadas por el OWASP HTTP Headers Cheat Sheet
-# que mdn-http-observatory-scan NO evalúa como "tests" (no aportan
-# scoreModifier), pero que la guía sí revisa explícitamente. Cada entrada
-# es una función (response_headers) -> (pass: bool, detalle: str).
+# Peso (importancia) que OWASP otorga a cada control para el cálculo del
+# puntaje propio. Escala 1 (menor) a 5 (crítico). Incluye tanto los tests
+# formales de mdn-http-observatory como los controles adicionales.
+OWASP_WEIGHTS = {
+    "content-security-policy": 5,
+    "strict-transport-security": 5,
+    "cookies": 5,
+    "redirection": 5,
+    "x-content-type-options": 3,
+    "x-frame-options": 3,
+    "referrer-policy": 3,
+    "cross-origin-resource-sharing": 3,
+    "cross-origin-resource-policy": 3,
+    "subresource-integrity": 2,
+    "Permissions-Policy": 3,
+    "Cross-Origin-Opener-Policy (COOP)": 3,
+    "Cross-Origin-Embedder-Policy (COEP)": 2,
+    "X-XSS-Protection": 1,
+    "Divulgación de información del servidor": 3,
+}
+
+# Cabeceras adicionales recomendadas por OWASP que mdn-http-observatory-scan
+# NO evalúa como "tests" (no aportan scoreModifier), pero que la guía sí
+# revisa explícitamente. Cada entrada es una función
+# (response_headers) -> (pass: bool, detalle: str).
 def _check_x_xss_protection(headers):
     value = headers.get("x-xss-protection")
     if value is None:
@@ -244,25 +296,91 @@ def score_color(score):
     return "bright_red"
 
 
-def build_summary_panel(hostname, scan):
-    grade = scan.get("grade", "N/A")
-    score = scan.get("score", 0)
+def owasp_grade(score):
+    """Traduce el puntaje OWASP (0-100) a una nota alfabética."""
+    if score >= 90:
+        return "A+"
+    if score >= 80:
+        return "A"
+    if score >= 70:
+        return "B"
+    if score >= 60:
+        return "C"
+    if score >= 50:
+        return "D"
+    return "F"
+
+
+def collect_checks(tests, response_headers):
+    """Reúne todos los controles (tests formales + adicionales) en una lista
+    unificada de dicts con: key, label, passed, weight, result,
+    recommendation, link, modifier."""
+    formal = []
+    for key in sorted(tests.keys()):
+        test = tests[key]
+        formal.append({
+            "key": key,
+            "label": TEST_LABELS.get(key, key),
+            "passed": test.get("pass"),
+            "weight": OWASP_WEIGHTS.get(key, 1),
+            "result": test.get("result", "N/A"),
+            "recommendation": RECOMMENDED_VALUES.get(key, "Ver guía OWASP."),
+            "link": OWASP_HEADER_LINKS.get(key, OWASP_CHEATSHEET_URL),
+            "modifier": test.get("scoreModifier", 0),
+        })
+
+    extra = []
+    normalized = {k.lower(): v for k, v in response_headers.items()}
+    for label, (check_fn, link) in EXTRA_CHECKS.items():
+        ok, detail = check_fn(normalized)
+        extra.append({
+            "key": label,
+            "label": label,
+            "passed": ok,
+            "weight": OWASP_WEIGHTS.get(label, 1),
+            "result": detail,
+            "recommendation": RECOMMENDED_VALUES.get(label, "Ver guía OWASP."),
+            "link": link,
+            "modifier": 0,
+        })
+
+    return formal, extra
+
+
+def compute_owasp_score(checks):
+    """Puntaje OWASP ponderado: 100 * (peso de controles que cumplen) /
+    (peso total de controles aplicables). Los controles 'N/A' se excluyen."""
+    applicable = [c for c in checks if c["passed"] is not None]
+    if not applicable:
+        return 0, 0
+    total_weight = sum(c["weight"] for c in applicable)
+    earned = sum(c["weight"] for c in applicable if c["passed"])
+    score = round(100 * earned / total_weight)
+    return score, total_weight
+
+
+def build_summary_panel(hostname, scan, owasp_score, owasp_grade):
     status_code = scan.get("statusCode", "N/A")
     passed = scan.get("testsPassed", 0)
     failed = scan.get("testsFailed", 0)
     total = scan.get("testsQuantity", passed + failed)
     error = scan.get("error")
 
-    g_color = grade_color(grade)
-    s_color = score_color(score)
+    obs_grade = scan.get("grade", "N/A")
+    obs_score = scan.get("score", 0)
+
+    g_color = grade_color(owasp_grade)
+    s_color = score_color(owasp_score)
 
     body = Text()
     body.append("Dominio: ", style="bold")
     body.append(f"{hostname}\n", style="cyan")
-    body.append("Nota:    ", style="bold")
-    body.append(f"{grade}", style=f"bold {g_color}")
-    body.append("   Puntaje: ", style="bold")
-    body.append(f"{score}/100\n", style=f"bold {s_color}")
+    body.append("Nota OWASP: ", style="bold")
+    body.append(f"{owasp_grade}", style=f"bold {g_color}")
+    body.append("   Puntaje OWASP: ", style="bold")
+    body.append(f"{owasp_score}/100\n", style=f"bold {s_color}")
+    body.append("Puntaje Observatory (referencia): ", style="bold")
+    body.append(f"{obs_score}/100 ({obs_grade})\n", style=grade_color(obs_grade))
     body.append("Estado HTTP: ", style="bold")
     body.append(f"{status_code}\n")
     body.append("Pruebas: ", style="bold")
@@ -276,7 +394,7 @@ def build_summary_panel(hostname, scan):
 
     return Panel(
         body,
-        title="[bold]Resumen del escaneo HTTP Observatory[/bold]",
+        title="[bold]Resumen del escaneo (puntuación OWASP)[/bold]",
         border_style=g_color,
         box=box.ROUNDED,
     )
@@ -296,9 +414,9 @@ def build_headers_table(response_headers):
     return table
 
 
-def build_tests_table(tests):
+def build_tests_table(checks):
     table = Table(
-        title="Evaluación de cabeceras de seguridad (OWASP HTTP Headers Cheat Sheet)",
+        title="Evaluación de cabeceras de seguridad (OWASP Cheat Sheet Series)",
         box=box.ROUNDED,
         header_style="bold white on blue",
         show_lines=True,
@@ -307,29 +425,32 @@ def build_tests_table(tests):
     table.add_column("Estado", justify="center", ratio=1)
     table.add_column("Resultado obtenido", ratio=2)
     table.add_column("Impacto", justify="center", ratio=1)
+    table.add_column("Peso OWASP", justify="center", ratio=1)
     table.add_column("Recomendación OWASP", ratio=4)
 
-    ordered_keys = sorted(tests.keys(), key=lambda k: (tests[k].get("pass") is True, k))
+    ordered = sorted(checks, key=lambda c: (c["passed"] is True, c["label"]))
 
-    for key in ordered_keys:
-        test = tests[key]
-        label = TEST_LABELS.get(key, key)
-        passed = test.get("pass")
-        modifier = test.get("scoreModifier", 0)
-        result = test.get("result", "N/A")
-        link = OWASP_HEADER_LINKS.get(key, OWASP_CHEATSHEET_URL)
-        recomendado = RECOMMENDED_VALUES.get(key, "Ver guía OWASP.")
+    for c in ordered:
+        passed = c["passed"]
+        label = c["label"]
+        modifier = c["modifier"]
+        result = c["result"]
+        link = c["link"]
+        recomendado = c["recommendation"]
+        weight = c["weight"]
 
         if passed is True:
             status = Text("CUMPLE", style="bold bright_green")
-            recomendacion = Text()
-            recomendacion.append("Conforme a OWASP.\n", style="green")
-            recomendacion.append(link, style="underline bright_cyan")
+            recomendacion = Text.from_markup(
+                f"Conforme a OWASP.\n[link={link}]{link}[/link]",
+                style="green",
+            )
         elif passed is False:
             status = Text("NO CUMPLE", style="bold bright_red")
-            recomendacion = Text()
-            recomendacion.append(f"{recomendado}\n", style="yellow")
-            recomendacion.append(link, style="underline bright_cyan")
+            recomendacion = Text.from_markup(
+                f"{recomendado}\n[link={link}]{link}[/link]",
+                style="yellow",
+            )
         else:
             status = Text("N/A", style="bold grey62")
             recomendacion = Text("Sin evaluación aplicable.", style="grey62")
@@ -337,16 +458,16 @@ def build_tests_table(tests):
         impact_style = "bright_green" if modifier > 0 else ("bright_red" if modifier < 0 else "grey62")
         impact_text = Text(f"{modifier:+d}" if modifier else "0", style=impact_style)
 
-        table.add_row(label, status, str(result), impact_text, recomendacion)
+        table.add_row(label, status, str(result), impact_text, str(weight), recomendacion)
 
     return table
 
 
-def build_extra_checks_table(response_headers):
+def build_extra_checks_table(checks):
     """Cabeceras del OWASP HTTP Headers Cheat Sheet que mdn-http-observatory-scan
     no puntúa como test formal, evaluadas directamente sobre las cabeceras crudas."""
     table = Table(
-        title="Cabeceras adicionales según OWASP Cheat Sheet (no puntuadas por mdn-http-observatory)",
+        title="Cabeceras adicionales según OWASP (no puntuadas por mdn-http-observatory)",
         box=box.ROUNDED,
         header_style="bold white on blue",
         show_lines=True,
@@ -354,59 +475,214 @@ def build_extra_checks_table(response_headers):
     table.add_column("Cabecera / Control", style="bold", ratio=2)
     table.add_column("Estado", justify="center", ratio=1)
     table.add_column("Detalle", ratio=3)
+    table.add_column("Peso OWASP", justify="center", ratio=1)
     table.add_column("Referencia OWASP", ratio=3)
 
-    normalized = {k.lower(): v for k, v in response_headers.items()}
-
-    for label, (check_fn, link) in EXTRA_CHECKS.items():
-        ok, detail = check_fn(normalized)
+    for c in checks:
+        ok = c["passed"]
+        label = c["label"]
+        detail = c["result"]
+        link = c["link"]
+        weight = c["weight"]
         if ok:
             status = Text("CUMPLE", style="bold bright_green")
-            ref = Text(link, style="underline bright_cyan")
+            ref = Text.from_markup(f"[link={link}]{link}[/link]", style="underline bright_cyan")
         else:
             status = Text("REVISAR", style="bold bright_red")
-            ref = Text(link, style="underline bright_cyan")
-        table.add_row(label, status, detail, ref)
+            ref = Text.from_markup(f"[link={link}]{link}[/link]", style="underline bright_cyan")
+        table.add_row(label, status, detail, str(weight), ref)
 
     return table
 
 
-def build_reference_panel():
+def build_reference_panel(checks):
+    """Lista todos los enlaces OWASP en texto plano para que no se pierdan
+    aunque el terminal no renderice hipervínculos."""
     body = Text()
     body.append("Guía de referencia utilizada:\n", style="bold")
-    body.append("OWASP HTTP Headers Cheat Sheet\n", style="bold cyan")
-    body.append(OWASP_CHEATSHEET_URL + "\n", style="underline bright_cyan")
-    body.append(
-        "Sección: Testing Proper Implementation of Security Headers -> ", style="italic"
-    )
-    body.append(OWASP_CHEATSHEET_URL + "#testing-proper-implementation-of-security-headers", style="underline bright_cyan")
+    body.append("OWASP Cheat Sheet Series\n", style="bold cyan")
+    body.append("Enlaces directos a los artículos OWASP por cabecera:\n", style="bold")
+    seen = set()
+    for c in checks:
+        link = c["link"]
+        if link in seen:
+            continue
+        seen.add(link)
+        body.append(f"  • {c['label']}:\n", style="bold")
+        body.append(f"    {link}\n", style="underline bright_cyan")
     return Panel(body, border_style="blue", box=box.ROUNDED)
 
 
 def render_report(hostname, data, console):
     scan = data.get("scan", {})
-    tests = data.get("tests", {})
     response_headers = scan.get("responseHeaders", {})
+    formal_checks, extra_checks = collect_checks(data.get("tests", {}), response_headers)
+    all_checks = formal_checks + extra_checks
+    owasp_score, _ = compute_owasp_score(all_checks)
+    grade = owasp_grade(owasp_score)
 
     console.rule(f"[bold blue]Auditoría de cabeceras de seguridad HTTP — {hostname}[/bold blue]")
-    console.print(build_summary_panel(hostname, scan))
+    console.print(build_summary_panel(hostname, scan, owasp_score, grade))
     console.print()
     if response_headers:
         console.print(build_headers_table(response_headers))
         console.print()
-    if tests:
-        console.print(build_tests_table(tests))
+    if formal_checks:
+        console.print(build_tests_table(formal_checks))
         console.print()
+    if extra_checks:
+        console.print(build_extra_checks_table(extra_checks))
+        console.print()
+    console.print(build_reference_panel(all_checks))
+
+    return all_checks, owasp_score, grade
+
+
+def build_pdf(hostname, scan, response_headers, formal_checks, extra_checks,
+              owasp_score, owasp_grade, out_path):
+    """Genera un informe PDF con reportlab. Los enlaces OWASP se incluyen
+    como hipervínculos clicables y como texto visible."""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        )
+        from xml.sax.saxutils import escape
+    except ImportError:
+        Console(stderr=True).print(
+            "[bold red]Error:[/bold red] para exportar a PDF se requiere 'reportlab'.\n"
+            "Instálalo con: [cyan]pip install reportlab[/cyan]"
+        )
+        sys.exit(1)
+
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+    h2 = ParagraphStyle("H2", parent=styles["Heading2"], spaceBefore=8, spaceAfter=4)
+    body = styles["BodyText"]
+    cell = ParagraphStyle("Cell", parent=body, fontSize=8, leading=10)
+    cell_bold = ParagraphStyle("CellBold", parent=cell, fontName="Helvetica-Bold")
+
+    def p(text, style=body):
+        return Paragraph(text, style)
+
+    def link_para(url):
+        return Paragraph(f'<a href="{url}" color="blue">{url}</a>', cell)
+
+    def make_table(header, rows, col_widths):
+        data = [header] + rows
+        t = Table(data, colWidths=col_widths, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 8),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#eef3f8")]),
+        ]))
+        return t
+
+    doc = SimpleDocTemplate(
+        out_path, pagesize=A4,
+        rightMargin=15 * mm, leftMargin=15 * mm,
+        topMargin=15 * mm, bottomMargin=15 * mm,
+    )
+    story = []
+    story.append(p(f"Auditoría de cabeceras de seguridad HTTP — {hostname}", title_style))
+    story.append(Spacer(1, 4 * mm))
+
+    obs_grade = scan.get("grade", "N/A")
+    obs_score = scan.get("score", 0)
+    story.append(p(
+        f"<b>Nota OWASP:</b> {owasp_grade} &nbsp;&nbsp; "
+        f"<b>Puntaje OWASP:</b> {owasp_score}/100"
+    ))
+    story.append(p(
+        f"<b>Puntaje Observatory (referencia):</b> {obs_score}/100 ({obs_grade})"
+    ))
+    story.append(p(f"<b>Estado HTTP:</b> {scan.get('statusCode', 'N/A')}"))
+    passed = scan.get("testsPassed", 0)
+    failed = scan.get("testsFailed", 0)
+    story.append(p(f"<b>Pruebas:</b> {passed} aprobadas / {failed} fallidas"))
+    story.append(Spacer(1, 4 * mm))
+
     if response_headers:
-        console.print(build_extra_checks_table(response_headers))
-        console.print()
-    console.print(build_reference_panel())
+        story.append(p("Cabeceras HTTP recibidas", h2))
+        rows = [[Paragraph(k, cell_bold), Paragraph(str(v), cell)]
+                for k, v in sorted(response_headers.items())]
+        story.append(make_table(
+            [Paragraph("Cabecera", cell_bold), Paragraph("Valor", cell_bold)],
+            rows, [60 * mm, 120 * mm],
+        ))
+        story.append(Spacer(1, 4 * mm))
+
+    if formal_checks:
+        story.append(p("Evaluación de cabeceras de seguridad (OWASP Cheat Sheet Series)", h2))
+        rows = []
+        for c in formal_checks:
+            estado = "CUMPLE" if c["passed"] is True else ("NO CUMPLE" if c["passed"] is False else "N/A")
+            color = colors.green if c["passed"] is True else (colors.red if c["passed"] is False else colors.grey)
+            rec = Paragraph(
+                f"{escape(c['recommendation'])}<br/><a href=\"{c['link']}\" color=\"blue\">{c['link']}</a>",
+                cell,
+            )
+            rows.append([
+                Paragraph(c["label"], cell_bold),
+                Paragraph(f'<font color="{color.hexval()}"><b>{estado}</b></font>', cell),
+                Paragraph(escape(str(c["result"])), cell),
+                Paragraph(f"{c['modifier']:+d}" if c["modifier"] else "0", cell),
+                Paragraph(str(c["weight"]), cell),
+                rec,
+            ])
+        story.append(make_table(
+            [Paragraph(h, cell_bold) for h in
+             ("Cabecera / Control", "Estado", "Resultado", "Impacto", "Peso OWASP", "Recomendación OWASP")],
+            rows, [38 * mm, 18 * mm, 30 * mm, 14 * mm, 14 * mm, 56 * mm],
+        ))
+        story.append(Spacer(1, 4 * mm))
+
+    if extra_checks:
+        story.append(p("Cabeceras adicionales según OWASP (no puntuadas por mdn-http-observatory)", h2))
+        rows = []
+        for c in extra_checks:
+            estado = "CUMPLE" if c["passed"] is True else "REVISAR"
+            color = colors.green if c["passed"] is True else colors.red
+            rows.append([
+                Paragraph(c["label"], cell_bold),
+                Paragraph(f'<font color="{color.hexval()}"><b>{estado}</b></font>', cell),
+                Paragraph(escape(str(c["result"])), cell),
+                Paragraph(str(c["weight"]), cell),
+                link_para(c["link"]),
+            ])
+        story.append(make_table(
+            [Paragraph(h, cell_bold) for h in
+             ("Cabecera / Control", "Estado", "Detalle", "Peso OWASP", "Referencia OWASP")],
+            rows, [40 * mm, 18 * mm, 52 * mm, 16 * mm, 44 * mm],
+        ))
+        story.append(Spacer(1, 4 * mm))
+
+    story.append(p("Referencias OWASP (enlaces directos)", h2))
+    seen = set()
+    for c in formal_checks + extra_checks:
+        link = c["link"]
+        if link in seen:
+            continue
+        seen.add(link)
+        story.append(Paragraph(
+            f"<b>{c['label']}:</b> <a href=\"{link}\" color=\"blue\">{link}</a>",
+            body,
+        ))
+
+    doc.build(story)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Audita las cabeceras de seguridad HTTP de un dominio usando "
-                     "mdn-http-observatory-scan y las evalúa según el OWASP HTTP Headers Cheat Sheet."
+                     "mdn-http-observatory-scan y las evalúa según el OWASP Cheat Sheet Series."
     )
     parser.add_argument("dominio", help="Dominio o host a escanear (ej: ejemplo.com)")
     parser.add_argument(
@@ -424,6 +700,11 @@ def parse_args():
         help="Ruta donde guardar el JSON crudo devuelto por mdn-http-observatory-scan",
         default=None,
     )
+    parser.add_argument(
+        "--pdf-out",
+        help="Ruta donde exportar el informe en formato PDF (requiere 'reportlab')",
+        default=None,
+    )
     return parser.parse_args()
 
 
@@ -439,7 +720,22 @@ def main():
             json.dump(data, f, indent=2, ensure_ascii=False)
         console.print(f"[green]JSON crudo guardado en:[/green] {args.json_out}")
 
+    scan = data.get("scan", {})
+    response_headers = scan.get("responseHeaders", {})
+    formal_checks, extra_checks = collect_checks(data.get("tests", {}), response_headers)
+    all_checks = formal_checks + extra_checks
+    owasp_score, _ = compute_owasp_score(all_checks)
+    grade = owasp_grade(owasp_score)
+
     render_report(args.dominio, data, console)
+
+    if args.pdf_out:
+        build_pdf(
+            args.dominio, scan, response_headers,
+            formal_checks, extra_checks,
+            owasp_score, grade, args.pdf_out,
+        )
+        console.print(f"[green]Informe PDF guardado en:[/green] {args.pdf_out}")
 
 
 if __name__ == "__main__":
