@@ -125,7 +125,7 @@ El script presenta en consola:
 ## Referencia
 
 - [OWASP HTTP Headers Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html)
-- [MDN HTTP Observatory](https://github.com/mdn/http-observatory)
+- [MDN HTTP Observatory](https://github.com/mdn/mdn-http-observatory)
 
 ## Archivos
 
