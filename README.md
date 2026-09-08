@@ -43,9 +43,21 @@ python3 http_headers_audit.py ejemplo.com --headers '{"Authorization":"Bearer to
 
 # Enviar cabeceras personalizadas también por HTTP (sin cifrar)
 python3 http_headers_audit.py ejemplo.com --headers '{"X-Debug":"1"}' --send-headers-over-http
+
+# Mostrar detalle técnico adicional (Impacto en el puntaje y Peso OWASP)
+python3 http_headers_audit.py ejemplo.com -v
+python3 http_headers_audit.py ejemplo.com --verbose
 ```
 
 > El dominio debe ingresarse **sin protocolo** (ej: `ejemplo.com`, no `https://ejemplo.com`).
+
+### Modo verbose (`-v` / `--verbose`)
+
+Por defecto, el escaneo **oculta** las columnas técnicas **Impacto** (en el puntaje) y
+**Peso OWASP** (ponderación usada en el cálculo), para priorizar la lectura del
+resultado y la recomendación. Para inspeccionar ese detalle (por ejemplo, para
+auditar cómo se compone el puntaje) usa `-v` / `--verbose`, que las añade de
+nuevo a las tablas de evaluación en consola y en el PDF.
 
 ## Salida
 
@@ -54,17 +66,48 @@ El script presenta en consola:
 1. **Panel resumen** — nota (A+ a F), puntaje, estado HTTP, pruebas aprobadas/fallidas.
 2. **Tabla de cabeceras HTTP recibidas** — todas las cabeceras devueltas por el servidor.
 3. **Tabla de evaluación (tests de mdn-http-observatory)** — para cada control (CSP, HSTS, cookies, CORS, etc.):
-   - Estado (CUMPLE / NO CUMPLE) con colores.
-   - Resultado obtenido por la herramienta.
-   - Impacto en el puntaje.
-   - Valor recomendado por OWASP (en caso de no cumplimiento) con enlace directo a la sección correspondiente del Cheat Sheet.
+   - Estado (CUMPLE / NO CUMPLE / N/A) con colores.
+   - Resultado obtenido por la herramienta, con el máximo espacio posible dentro
+     de la celda para que el texto siempre sea legible.
+   - **Contra** — contra qué amenazas/vectores de ataque protege una configuración
+     correcta de esa cabecera (ej: XSS, clickjacking, session hijacking, MiTM,
+     supply chain, etc.), según las mismas guías OWASP usadas como base.
+   - Valor recomendado por OWASP (en caso de no cumplimiento), también con el
+     máximo espacio posible en la celda, con enlace directo a la sección
+     correspondiente del Cheat Sheet.
+   - Impacto en el puntaje y Peso OWASP — **ocultos por defecto**, visibles solo
+     con `-v` / `--verbose`.
+   - Cuando el resultado crudo de la herramienta indica que un control no aplica
+     al modelo de negocio real del sitio (por ejemplo: no hay cookies, no se
+     cargan scripts de terceros, o el sitio no atiende HTTP/HTTPS), el estado se
+     marca como **N/A** y se añade una nota de "Contexto de negocio" explicando
+     el motivo, en lugar de contarlo como una configuración correcta o incorrecta.
 4. **Tabla de cabeceras adicionales (OWASP Cheat Sheet)** — controles que mdn-http-observatory no puntúa pero que OWASP sí recomienda revisar:
    - X-XSS-Protection (debería omitirse o valer `0`).
    - Permissions-Policy.
    - Cross-Origin-Opener-Policy (COOP).
    - Cross-Origin-Embedder-Policy (COEP).
    - Divulgación de información del servidor (`Server`, `X-Powered-By`, `X-AspNet-Version`, etc.).
+   - Estas filas también incluyen la columna **Contra** y ocultan el Peso OWASP salvo con `-v`.
 5. **Panel de referencia** — enlace a la guía OWASP y a la sección *Testing Proper Implementation of Security Headers*.
+6. **Nota final sobre la puntuación** — ver aviso más abajo; se imprime siempre al final del reporte (consola y PDF).
+
+## Aviso sobre la puntuación (importante)
+
+- La nota (A+ a F) y el puntaje mostrados **no son un puntaje oficial de OWASP**.
+  OWASP no emite calificaciones ni certificaciones de cabeceras HTTP; el cálculo
+  es propio de este script y está **inspirado** en la importancia relativa que las
+  guías de OWASP (Cheat Sheet Series) asignan a cada cabecera.
+- **MDN HTTP Observatory** (la herramienta `mdn-http-observatory-scan` en la que
+  se apoya este proyecto) es un **puntuador de configuración de cabeceras HTTP**.
+  Se usa aquí como una **métrica de apoyo** dentro de la evaluación, y **no**
+  como una medición global de la seguridad del sitio analizado: no evalúa
+  vulnerabilidades como inyección SQL, componentes desactualizados, plugins de
+  CMS vulnerables o malas prácticas de gestión de contraseñas, entre otras. Así
+  lo indica la propia documentación de MDN
+  ([FAQ del Observatory](https://developer.mozilla.org/en-US/observatory/docs/faq)).
+  Este informe no sustituye pruebas de intrusión, revisión de código ni un
+  análisis de seguridad integral.
 
 ## Referencia
 

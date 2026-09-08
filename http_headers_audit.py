@@ -123,6 +123,69 @@ RECOMMENDED_VALUES = {
     "cross-origin-resource-policy": "Cross-Origin-Resource-Policy: same-site",
 }
 
+# Amenazas / vectores de ataque frente a los cuales protege una configuración
+# correcta de cada cabecera, según las mismas guías OWASP usadas como base
+# (Cheat Sheet Series). Se usa para poblar la columna "Contra".
+THREATS_MITIGATED = {
+    "content-security-policy": (
+        "Cross-Site Scripting (XSS), inyección de código/HTML, clickjacking "
+        "(vía frame-ancestors) y carga de recursos maliciosos de terceros."
+    ),
+    "cookies": (
+        "Secuestro de sesión (session hijacking), exfiltración de cookies vía XSS, "
+        "CSRF (con SameSite) y captura de credenciales en redes no cifradas."
+    ),
+    "cross-origin-resource-sharing": (
+        "Acceso no autorizado a datos/API desde orígenes maliciosos y fuga de "
+        "información sensible mediante peticiones cross-origin."
+    ),
+    "redirection": (
+        "Ataques de downgrade a HTTP, interceptación/manipulación de tráfico "
+        "(Manipulator-in-the-Middle) y robo de credenciales en tránsito."
+    ),
+    "referrer-policy": (
+        "Fuga de URLs internas, tokens o parámetros sensibles hacia sitios de "
+        "terceros a través de la cabecera Referer."
+    ),
+    "strict-transport-security": (
+        "SSL stripping, ataques Manipulator-in-the-Middle (MiTM) y secuestro de "
+        "sesión por tráfico servido accidentalmente sin cifrar."
+    ),
+    "subresource-integrity": (
+        "Compromiso de CDN o proveedores externos que inyecten JavaScript/CSS "
+        "malicioso (ataques de cadena de suministro / supply chain)."
+    ),
+    "x-content-type-options": (
+        "MIME sniffing del navegador que permite ejecutar contenido no confiable "
+        "como script o HTML (vector de XSS)."
+    ),
+    "x-frame-options": "Clickjacking (ataques de UI redress mediante iframes).",
+    "cross-origin-resource-policy": (
+        "Ataques de canal lateral tipo Spectre y filtración de recursos entre "
+        "orígenes (XS-Leaks)."
+    ),
+    "X-XSS-Protection": (
+        "Explotación de fallas del filtro XSS heredado del navegador, que en "
+        "ciertos casos podía ser abusado para crear vulnerabilidades adicionales."
+    ),
+    "Permissions-Policy": (
+        "Abuso de APIs sensibles del navegador (cámara, micrófono, geolocalización, "
+        "USB, etc.) por scripts propios o de terceros comprometidos."
+    ),
+    "Cross-Origin-Opener-Policy (COOP)": (
+        "Ataques de canal lateral (Spectre) y manipulación entre ventanas/pestañas "
+        "de distinto origen (cross-window attacks)."
+    ),
+    "Cross-Origin-Embedder-Policy (COEP)": (
+        "Fuga de datos mediante ataques de canal lateral (Spectre) en contextos "
+        "que requieren aislamiento de origen cruzado."
+    ),
+    "Divulgación de información del servidor": (
+        "Reconocimiento dirigido (fingerprinting) que facilita explotar "
+        "vulnerabilidades conocidas de la versión de software expuesta."
+    ),
+}
+
 # Peso (importancia) que OWASP otorga a cada control para el cálculo del
 # puntaje propio. Escala 1 (menor) a 5 (crítico). Incluye tanto los tests
 # formales de mdn-http-observatory como los controles adicionales.
@@ -311,22 +374,74 @@ def owasp_grade(score):
     return "F"
 
 
+# Resultados "crudos" (campo `result`) que devuelve mdn-http-observatory
+# cuando, en el contexto real del sitio, el control evaluado simplemente
+# no aplica al modelo de negocio (no hay cookies, no se cargan scripts,
+# el sitio no sirve por HTTP, etc.), en lugar de reflejar una configuración
+# correcta deliberada. Tratarlos como "APRUEBA" sería sintácticamente
+# válido pero engañoso: no hubo una decisión de seguridad que evaluar.
+# Por eso se reclasifican como N/A ("Sin evaluación aplicable en este
+# contexto") y se excluyen del cálculo de puntaje, con una nota explicando
+# el motivo de negocio.
+BUSINESS_CONTEXT_NOTES = {
+    "cookies-not-found": (
+        "El servidor no emitió cookies en esta respuesta; no existe gestión de "
+        "sesión que asegurar en este contexto todavía."
+    ),
+    "cross-origin-resource-sharing-not-implemented": (
+        "El recurso no habilita CORS; no se expone una API pensada para "
+        "consumo entre orígenes en este contexto de negocio."
+    ),
+    "sri-not-implemented-but-no-scripts-loaded": (
+        "La página no carga scripts externos; no hay dependencia de terceros "
+        "que proteger con SRI en este contexto."
+    ),
+    "sri-not-implemented-response-not-html": (
+        "La respuesta no es HTML (ej. API/JSON); SRI no aplica a este tipo de "
+        "contenido."
+    ),
+    "redirection-not-needed-no-http": (
+        "El host no atiende peticiones por HTTP (puerto cerrado o solo HTTPS); "
+        "la redirección HTTP->HTTPS no aplica en este contexto."
+    ),
+    "hsts-not-implemented-no-https": (
+        "El sitio no sirve contenido por HTTPS en este contexto; HSTS no puede "
+        "aplicarse hasta habilitar TLS."
+    ),
+}
+
+
 def collect_checks(tests, response_headers):
     """Reúne todos los controles (tests formales + adicionales) en una lista
     unificada de dicts con: key, label, passed, weight, result,
-    recommendation, link, modifier."""
+    recommendation, link, modifier, against, context_note.
+
+    Además de la validación sintáctica de cada cabecera, se aplica una capa
+    de contexto de negocio: cuando el resultado crudo de la herramienta
+    indica que el control no aplica al modelo real del sitio (sin cookies,
+    sin scripts de terceros, sin HTTPS, etc.), se reclasifica como "N/A" en
+    lugar de contarlo como una configuración correcta, y se documenta el
+    motivo en 'context_note'."""
     formal = []
     for key in sorted(tests.keys()):
         test = tests[key]
+        raw_result = test.get("result", "N/A")
+        passed = test.get("pass")
+        context_note = None
+        if raw_result in BUSINESS_CONTEXT_NOTES:
+            passed = None
+            context_note = BUSINESS_CONTEXT_NOTES[raw_result]
         formal.append({
             "key": key,
             "label": TEST_LABELS.get(key, key),
-            "passed": test.get("pass"),
+            "passed": passed,
             "weight": OWASP_WEIGHTS.get(key, 1),
-            "result": test.get("result", "N/A"),
+            "result": raw_result,
             "recommendation": RECOMMENDED_VALUES.get(key, "Ver guía OWASP."),
+            "against": THREATS_MITIGATED.get(key, "Ver guía OWASP."),
             "link": OWASP_HEADER_LINKS.get(key, OWASP_CHEATSHEET_URL),
             "modifier": test.get("scoreModifier", 0),
+            "context_note": context_note,
         })
 
     extra = []
@@ -340,8 +455,10 @@ def collect_checks(tests, response_headers):
             "weight": OWASP_WEIGHTS.get(label, 1),
             "result": detail,
             "recommendation": RECOMMENDED_VALUES.get(label, "Ver guía OWASP."),
+            "against": THREATS_MITIGATED.get(label, "Ver guía OWASP."),
             "link": link,
             "modifier": 0,
+            "context_note": None,
         })
 
     return formal, extra
@@ -414,7 +531,7 @@ def build_headers_table(response_headers):
     return table
 
 
-def build_tests_table(checks):
+def build_tests_table(checks, verbose=False):
     table = Table(
         title="Evaluación de cabeceras de seguridad (OWASP Cheat Sheet Series)",
         box=box.ROUNDED,
@@ -423,10 +540,12 @@ def build_tests_table(checks):
     )
     table.add_column("Cabecera / Control", style="bold", ratio=2)
     table.add_column("Estado", justify="center", ratio=1)
-    table.add_column("Resultado obtenido", ratio=2)
-    table.add_column("Impacto", justify="center", ratio=1)
-    table.add_column("Peso OWASP", justify="center", ratio=1)
-    table.add_column("Recomendación OWASP", ratio=4)
+    table.add_column("Resultado obtenido", ratio=4, overflow="fold")
+    if verbose:
+        table.add_column("Impacto", justify="center", ratio=1)
+        table.add_column("Peso OWASP", justify="center", ratio=1)
+    table.add_column("Contra (amenazas mitigadas)", ratio=3, overflow="fold")
+    table.add_column("Recomendación OWASP", ratio=4, overflow="fold")
 
     ordered = sorted(checks, key=lambda c: (c["passed"] is True, c["label"]))
 
@@ -438,32 +557,50 @@ def build_tests_table(checks):
         link = c["link"]
         recomendado = c["recommendation"]
         weight = c["weight"]
+        context_note = c.get("context_note")
+        against = Text(c.get("against", "Ver guía OWASP."), style="white", overflow="fold")
 
         if passed is True:
             status = Text("CUMPLE", style="bold bright_green")
             recomendacion = Text.from_markup(
                 f"Conforme a OWASP.\n[link={link}]{link}[/link]",
                 style="green",
+                overflow="fold",
             )
         elif passed is False:
             status = Text("NO CUMPLE", style="bold bright_red")
             recomendacion = Text.from_markup(
                 f"{recomendado}\n[link={link}]{link}[/link]",
                 style="yellow",
+                overflow="fold",
             )
         else:
             status = Text("N/A", style="bold grey62")
-            recomendacion = Text("Sin evaluación aplicable.", style="grey62")
+            nota = context_note or "Sin evaluación aplicable en este contexto."
+            recomendacion = Text.from_markup(
+                f"{nota}\n[link={link}]{link}[/link]",
+                style="grey62",
+                overflow="fold",
+            )
 
-        impact_style = "bright_green" if modifier > 0 else ("bright_red" if modifier < 0 else "grey62")
-        impact_text = Text(f"{modifier:+d}" if modifier else "0", style=impact_style)
+        result_text = str(result)
+        if context_note:
+            result_text += f"\n[Contexto de negocio] {context_note}"
+        result_cell = Text(result_text, overflow="fold")
 
-        table.add_row(label, status, str(result), impact_text, str(weight), recomendacion)
+        row = [label, status, result_cell]
+        if verbose:
+            impact_style = "bright_green" if modifier > 0 else ("bright_red" if modifier < 0 else "grey62")
+            impact_text = Text(f"{modifier:+d}" if modifier else "0", style=impact_style)
+            row += [impact_text, str(weight)]
+        row += [against, recomendacion]
+
+        table.add_row(*row)
 
     return table
 
 
-def build_extra_checks_table(checks):
+def build_extra_checks_table(checks, verbose=False):
     """Cabeceras del OWASP HTTP Headers Cheat Sheet que mdn-http-observatory-scan
     no puntúa como test formal, evaluadas directamente sobre las cabeceras crudas."""
     table = Table(
@@ -474,23 +611,31 @@ def build_extra_checks_table(checks):
     )
     table.add_column("Cabecera / Control", style="bold", ratio=2)
     table.add_column("Estado", justify="center", ratio=1)
-    table.add_column("Detalle", ratio=3)
-    table.add_column("Peso OWASP", justify="center", ratio=1)
-    table.add_column("Referencia OWASP", ratio=3)
+    table.add_column("Detalle", ratio=4, overflow="fold")
+    if verbose:
+        table.add_column("Peso OWASP", justify="center", ratio=1)
+    table.add_column("Contra (amenazas mitigadas)", ratio=3, overflow="fold")
+    table.add_column("Referencia OWASP", ratio=3, overflow="fold")
 
     for c in checks:
         ok = c["passed"]
         label = c["label"]
-        detail = c["result"]
+        detail = Text(str(c["result"]), overflow="fold")
         link = c["link"]
         weight = c["weight"]
+        against = Text(c.get("against", "Ver guía OWASP."), overflow="fold")
         if ok:
             status = Text("CUMPLE", style="bold bright_green")
-            ref = Text.from_markup(f"[link={link}]{link}[/link]", style="underline bright_cyan")
+            ref = Text.from_markup(f"[link={link}]{link}[/link]", style="underline bright_cyan", overflow="fold")
         else:
             status = Text("REVISAR", style="bold bright_red")
-            ref = Text.from_markup(f"[link={link}]{link}[/link]", style="underline bright_cyan")
-        table.add_row(label, status, detail, str(weight), ref)
+            ref = Text.from_markup(f"[link={link}]{link}[/link]", style="underline bright_cyan", overflow="fold")
+
+        row = [label, status, detail]
+        if verbose:
+            row.append(str(weight))
+        row += [against, ref]
+        table.add_row(*row)
 
     return table
 
@@ -513,7 +658,30 @@ def build_reference_panel(checks):
     return Panel(body, border_style="blue", box=box.ROUNDED)
 
 
-def render_report(hostname, data, console):
+DISCLAIMER_TEXT = (
+    "La puntuación y nota (A+ a F) mostradas en este informe NO son un puntaje "
+    "oficial de OWASP: OWASP no emite calificaciones ni certificaciones de "
+    "cabeceras HTTP. Es un cálculo propio de este script, inspirado en la "
+    "importancia relativa que las guías de OWASP (Cheat Sheet Series) dan a "
+    "cada cabecera.\n"
+    "Asimismo, mdn-http-observatory (Observatory) es un puntuador de "
+    "configuración de cabeceras HTTP: se usa aquí como una métrica de apoyo "
+    "dentro de la evaluación, NO como una medición global de la seguridad del "
+    "sitio analizado. No sustituye pruebas de intrusión, revisión de código, "
+    "gestión de vulnerabilidades ni un análisis de seguridad integral."
+)
+
+
+def build_disclaimer_panel():
+    return Panel(
+        Text(DISCLAIMER_TEXT, style="grey62"),
+        title="[bold]Nota importante sobre la puntuación[/bold]",
+        border_style="grey62",
+        box=box.ROUNDED,
+    )
+
+
+def render_report(hostname, data, console, verbose=False):
     scan = data.get("scan", {})
     response_headers = scan.get("responseHeaders", {})
     formal_checks, extra_checks = collect_checks(data.get("tests", {}), response_headers)
@@ -528,18 +696,20 @@ def render_report(hostname, data, console):
         console.print(build_headers_table(response_headers))
         console.print()
     if formal_checks:
-        console.print(build_tests_table(formal_checks))
+        console.print(build_tests_table(formal_checks, verbose=verbose))
         console.print()
     if extra_checks:
-        console.print(build_extra_checks_table(extra_checks))
+        console.print(build_extra_checks_table(extra_checks, verbose=verbose))
         console.print()
     console.print(build_reference_panel(all_checks))
+    console.print()
+    console.print(build_disclaimer_panel())
 
     return all_checks, owasp_score, grade
 
 
 def build_pdf(hostname, scan, response_headers, formal_checks, extra_checks,
-              owasp_score, owasp_grade, out_path):
+              owasp_score, owasp_grade, out_path, verbose=False):
     """Genera un informe PDF con reportlab. Los enlaces OWASP se incluyen
     como hipervínculos clicables y como texto visible."""
     try:
@@ -625,22 +795,37 @@ def build_pdf(hostname, scan, response_headers, formal_checks, extra_checks,
         for c in formal_checks:
             estado = "CUMPLE" if c["passed"] is True else ("NO CUMPLE" if c["passed"] is False else "N/A")
             color = colors.green if c["passed"] is True else (colors.red if c["passed"] is False else colors.grey)
+            resultado_txt = escape(str(c["result"]))
+            if c.get("context_note"):
+                resultado_txt += f"<br/><i>[Contexto de negocio] {escape(c['context_note'])}</i>"
             rec = Paragraph(
                 f"{escape(c['recommendation'])}<br/><a href=\"{c['link']}\" color=\"blue\">{c['link']}</a>",
                 cell,
             )
-            rows.append([
+            row = [
                 Paragraph(c["label"], cell_bold),
                 Paragraph(f'<font color="{color.hexval()}"><b>{estado}</b></font>', cell),
-                Paragraph(escape(str(c["result"])), cell),
-                Paragraph(f"{c['modifier']:+d}" if c["modifier"] else "0", cell),
-                Paragraph(str(c["weight"]), cell),
+                Paragraph(resultado_txt, cell),
+            ]
+            if verbose:
+                row += [
+                    Paragraph(f"{c['modifier']:+d}" if c["modifier"] else "0", cell),
+                    Paragraph(str(c["weight"]), cell),
+                ]
+            row += [
+                Paragraph(escape(c.get("against", "Ver guía OWASP.")), cell),
                 rec,
-            ])
+            ]
+            rows.append(row)
+        if verbose:
+            headers = ("Cabecera / Control", "Estado", "Resultado", "Impacto", "Peso OWASP", "Contra", "Recomendación OWASP")
+            widths = [30 * mm, 15 * mm, 26 * mm, 10 * mm, 10 * mm, 34 * mm, 42 * mm]
+        else:
+            headers = ("Cabecera / Control", "Estado", "Resultado", "Contra", "Recomendación OWASP")
+            widths = [30 * mm, 16 * mm, 34 * mm, 42 * mm, 45 * mm]
         story.append(make_table(
-            [Paragraph(h, cell_bold) for h in
-             ("Cabecera / Control", "Estado", "Resultado", "Impacto", "Peso OWASP", "Recomendación OWASP")],
-            rows, [38 * mm, 18 * mm, 30 * mm, 14 * mm, 14 * mm, 56 * mm],
+            [Paragraph(h, cell_bold) for h in headers],
+            rows, widths,
         ))
         story.append(Spacer(1, 4 * mm))
 
@@ -650,17 +835,27 @@ def build_pdf(hostname, scan, response_headers, formal_checks, extra_checks,
         for c in extra_checks:
             estado = "CUMPLE" if c["passed"] is True else "REVISAR"
             color = colors.green if c["passed"] is True else colors.red
-            rows.append([
+            row = [
                 Paragraph(c["label"], cell_bold),
                 Paragraph(f'<font color="{color.hexval()}"><b>{estado}</b></font>', cell),
                 Paragraph(escape(str(c["result"])), cell),
-                Paragraph(str(c["weight"]), cell),
+            ]
+            if verbose:
+                row.append(Paragraph(str(c["weight"]), cell))
+            row += [
+                Paragraph(escape(c.get("against", "Ver guía OWASP.")), cell),
                 link_para(c["link"]),
-            ])
+            ]
+            rows.append(row)
+        if verbose:
+            headers = ("Cabecera / Control", "Estado", "Detalle", "Peso OWASP", "Contra", "Referencia OWASP")
+            widths = [34 * mm, 16 * mm, 34 * mm, 12 * mm, 34 * mm, 40 * mm]
+        else:
+            headers = ("Cabecera / Control", "Estado", "Detalle", "Contra", "Referencia OWASP")
+            widths = [36 * mm, 18 * mm, 40 * mm, 40 * mm, 36 * mm]
         story.append(make_table(
-            [Paragraph(h, cell_bold) for h in
-             ("Cabecera / Control", "Estado", "Detalle", "Peso OWASP", "Referencia OWASP")],
-            rows, [40 * mm, 18 * mm, 52 * mm, 16 * mm, 44 * mm],
+            [Paragraph(h, cell_bold) for h in headers],
+            rows, widths,
         ))
         story.append(Spacer(1, 4 * mm))
 
@@ -675,6 +870,10 @@ def build_pdf(hostname, scan, response_headers, formal_checks, extra_checks,
             f"<b>{c['label']}:</b> <a href=\"{link}\" color=\"blue\">{link}</a>",
             body,
         ))
+
+    story.append(Spacer(1, 6 * mm))
+    story.append(p("Nota importante sobre la puntuación", h2))
+    story.append(p(escape(DISCLAIMER_TEXT).replace("\n", "<br/>"), cell))
 
     doc.build(story)
 
@@ -705,6 +904,12 @@ def parse_args():
         help="Ruta donde exportar el informe en formato PDF (requiere 'reportlab')",
         default=None,
     )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Muestra columnas adicionales de detalle técnico (Impacto y Peso OWASP), "
+             "ocultas por defecto en el escaneo estándar.",
+    )
     return parser.parse_args()
 
 
@@ -727,13 +932,13 @@ def main():
     owasp_score, _ = compute_owasp_score(all_checks)
     grade = owasp_grade(owasp_score)
 
-    render_report(args.dominio, data, console)
+    render_report(args.dominio, data, console, verbose=args.verbose)
 
     if args.pdf_out:
         build_pdf(
             args.dominio, scan, response_headers,
             formal_checks, extra_checks,
-            owasp_score, grade, args.pdf_out,
+            owasp_score, grade, args.pdf_out, verbose=args.verbose,
         )
         console.print(f"[green]Informe PDF guardado en:[/green] {args.pdf_out}")
 
