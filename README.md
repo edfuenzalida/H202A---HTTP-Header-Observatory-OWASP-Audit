@@ -51,6 +51,19 @@ python3 http_headers_audit.py ejemplo.com --verbose
 
 > El dominio debe ingresarse **sin protocolo** (ej: `ejemplo.com`, no `https://ejemplo.com`).
 
+### Visualización 
+
+Ejecución contra dominio example.com
+
+<img width="1230" height="470" alt="image" src="https://github.com/user-attachments/assets/b002d584-d3ec-4e63-bcc5-e5877a1efc96" />
+
+<img width="1912" height="1025" alt="image" src="https://github.com/user-attachments/assets/e38da0ad-83d9-4fad-bf98-fa4e89d00a5f" />
+
+<img width="1918" height="434" alt="image" src="https://github.com/user-attachments/assets/d5eb3edd-4872-4391-b748-508a8608ff6f" />
+
+<img width="1914" height="739" alt="image" src="https://github.com/user-attachments/assets/65e4bc24-e727-451b-9f99-6b65a1d788d5" />
+
+
 ### Modo verbose (`-v` / `--verbose`)
 
 Por defecto, el escaneo **oculta** las columnas técnicas **Impacto** (en el puntaje) y
